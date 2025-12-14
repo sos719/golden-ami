@@ -23,10 +23,6 @@ phases:
       - BUILD_TS="$(date +%Y%m%d-%H%M%S)"
       - AMI_NAME="${AMI_NAME_PREFIX}-${BUILD_TS}"
       - echo "AMI_NAME=${AMI_NAME}"
-
-      # INSTANCE_PROFILE_NAME can be either:
-      # - GoldenAmiEc2Role (name)
-      # - arn:aws:iam::<acct>:instance-profile/GoldenAmiEc2Role (ARN)
       - |
         if [[ "${INSTANCE_PROFILE_NAME}" == arn:* ]]; then
           IAM_INSTANCE_PROFILE="Arn=${INSTANCE_PROFILE_NAME}"
