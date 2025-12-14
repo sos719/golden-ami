@@ -24,7 +24,9 @@ phases:
       - AMI_NAME="${AMI_NAME_PREFIX}-${BUILD_TS}"
       - echo "AMI_NAME=${AMI_NAME}"
 
-      # Allow INSTANCE_PROFILE_NAME to be either "GoldenAmiEc2Role" or the full ARN
+      # INSTANCE_PROFILE_NAME can be either:
+      # - GoldenAmiEc2Role (name)
+      # - arn:aws:iam::<acct>:instance-profile/GoldenAmiEc2Role (ARN)
       - |
         if [[ "${INSTANCE_PROFILE_NAME}" == arn:* ]]; then
           IAM_INSTANCE_PROFILE="Arn=${INSTANCE_PROFILE_NAME}"
@@ -51,10 +53,14 @@ phases:
         --output text)"
       - echo "BUILDER_INSTANCE_ID=$BUILDER_INSTANCE_ID"
 
+      - echo "Waiting for instance to be running..."
       - aws ec2 wait instance-running --region "$AWS_REGION" --instance-ids "$BUILDER_INSTANCE_ID"
+
+      - echo "Waiting for SSM to be Online..."
       - scripts/wait_for_ssm.sh "$BUILDER_INSTANCE_ID" 420 "$AWS_REGION"
 
-      - echo "2) Patch/configure builder via SSM"
+      - echo "2) Patch/configure builder via SSM (base64-safe)"
+      - PATCH_B64="$(base64 scripts/patch_and_configure.sh | tr -d '\n')"
       - >
         PATCH_COMMAND_ID="$(aws ssm send-command
         --region "$AWS_REGION"
@@ -62,17 +68,15 @@ phases:
         --targets "Key=instanceids,Values=$BUILDER_INSTANCE_ID"
         --parameters commands="[
           \"set -euo pipefail\",
-          \"cat > /tmp/patch_and_configure.sh << 'EOF'\",
-          \"$(sed 's/\"/\\\\\"/g' scripts/patch_and_configure.sh)\",
-          \"EOF\",
-          \"chmod +x /tmp/patch_and_configure.sh\",
+          \"echo '$PATCH_B64' | base64 -d | sudo tee /tmp/patch_and_configure.sh >/dev/null\",
+          \"sudo chmod +x /tmp/patch_and_configure.sh\",
           \"sudo /tmp/patch_and_configure.sh\"
         ]"
         --query "Command.CommandId"
         --output text)"
       - echo "PATCH_COMMAND_ID=$PATCH_COMMAND_ID"
 
-      - echo "Waiting for SSM command to complete..."
+      - echo "Waiting for patch/configure SSM command to complete..."
       - |
         while true; do
           STATUS=$(aws ssm get-command-invocation \
@@ -110,6 +114,7 @@ phases:
         --output text)"
       - echo "AMI_ID=$AMI_ID"
 
+      - echo "Waiting for AMI to become available..."
       - aws ec2 wait image-available --region "$AWS_REGION" --image-ids "$AMI_ID"
 
       - echo "Writing ami_id.txt"

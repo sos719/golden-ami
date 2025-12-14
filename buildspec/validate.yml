@@ -10,10 +10,11 @@ phases:
       - source config/variables.env
       - chmod +x scripts/*.sh
 
+      - echo "Reading AMI_ID from ami_id.txt"
       - AMI_ID="$(cat ami_id.txt)"
-      - echo "Validating AMI_ID=$AMI_ID"
+      - echo "AMI_ID=$AMI_ID"
 
-      # Allow INSTANCE_PROFILE_NAME to be either "GoldenAmiEc2Role" or the full ARN
+      # INSTANCE_PROFILE_NAME can be either a name or an instance-profile ARN
       - |
         if [[ "${INSTANCE_PROFILE_NAME}" == arn:* ]]; then
           IAM_INSTANCE_PROFILE="Arn=${INSTANCE_PROFILE_NAME}"
@@ -40,10 +41,14 @@ phases:
         --output text)"
       - echo "VALIDATION_INSTANCE_ID=$VALIDATION_INSTANCE_ID"
 
+      - echo "Waiting for validation instance to be running..."
       - aws ec2 wait instance-running --region "$AWS_REGION" --instance-ids "$VALIDATION_INSTANCE_ID"
+
+      - echo "Waiting for validation instance SSM to be Online..."
       - scripts/wait_for_ssm.sh "$VALIDATION_INSTANCE_ID" 420 "$AWS_REGION"
 
-      - echo "2) Validate via SSM"
+      - echo "2) Run validation via SSM (base64-safe)"
+      - VALIDATE_B64="$(base64 scripts/validate_ami.sh | tr -d '\n')"
       - >
         VALIDATE_COMMAND_ID="$(aws ssm send-command
         --region "$AWS_REGION"
@@ -51,10 +56,8 @@ phases:
         --targets "Key=instanceids,Values=$VALIDATION_INSTANCE_ID"
         --parameters commands="[
           \"set -euo pipefail\",
-          \"cat > /tmp/validate_ami.sh << 'EOF'\",
-          \"$(sed 's/\"/\\\\\"/g' scripts/validate_ami.sh)\",
-          \"EOF\",
-          \"chmod +x /tmp/validate_ami.sh\",
+          \"echo '$VALIDATE_B64' | base64 -d | sudo tee /tmp/validate_ami.sh >/dev/null\",
+          \"sudo chmod +x /tmp/validate_ami.sh\",
           \"sudo /tmp/validate_ami.sh\"
         ]"
         --query "Command.CommandId"
@@ -87,7 +90,7 @@ phases:
           sleep 10
         done
 
-      - echo "Validation passed" > validation_result.txt
+      - echo "SUCCESS" > validation_result.txt
 
   post_build:
     commands:
