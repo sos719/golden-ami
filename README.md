@@ -1,21 +1,19 @@
-Repository For Golden AMI BuildPipeline
-
-## Stages
-1) BuildAMI (CodeBuild)
-- dynamically selects latest Amazon Linux 2023 x86 base AMI
-- launches builder EC2 in a public subnet
-- patches/configures via SSM Run Command
-- installs OpenSCAP tooling and SCAP Security Guide
-- enables dnf-automatic (automatic updates)
-- creates AMI and outputs ami_id.txt
-- terminates builder instance
-
-2) ValidateAMI (CodeBuild)
-- launches validation EC2 from the new AMI
-- validates marker + jq + dnf-automatic + OpenSCAP presence via SSM
-- outputs validation_result.txt
-- terminates validation instance
-
-3) PublishAMI (CodeBuild)
-- writes AMI ID to SSM Parameter Store (/golden-ami/latest)
-- outputs publish_result.txt
+At a high level, the pipeline operates as follows:
+1.	Source Stage: CodePipeline
+a.	CodePipeline pulls infrastructure scripts and buildspecs from GitHub.
+2.	Build Stage: CodeBuild (Golden AMI Creation)
+a.	Dynamically queries AWS for the latest Amazon Linux 2023 AMI.
+b.	Launches a temporary EC2 “builder” instance.
+c.	build.sh script:
+i.	Apply OS updates
+ii.	Install baseline tooling
+iii.	Configure the system
+iv.	Creates a Golden AMI from the configured instance.
+v.	Terminates the builder instance.
+vi.	Outputs the AMI ID as an artifact.
+3.	Test / Validate Stage
+a.	Launches a new EC2 instance from the newly created AMI.
+b.	validate.sh script checks to ensure all installed software and configuration exists
+c.	Terminates the validation instance upon completion.
+4.	Publish Stage
+a.	Writes the validated AMI ID to AWS Parameter Store.
