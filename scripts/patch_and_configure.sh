@@ -2,6 +2,7 @@
 set -euo pipefail
 
 # Patch OS, install baseline tools (jq + security scanner OpenSCAP) and setup automatic updates
+sudo dnf -y update
 sudo dnf -y install jq dnf-automatic openscap-scanner scap-security-guide
 
 # Enable automatic updates (dnf-automatic)

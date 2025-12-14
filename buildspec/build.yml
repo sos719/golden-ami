@@ -8,21 +8,22 @@ phases:
       - set -euo pipefail
       - source config/variables.env
       - chmod +x scripts/*.sh
-      - BUILD_TS="$(date +%Y%m%d-%H%M%S)"
-      - AMI_NAME="golden-ami-${BUILD_TS}"
+      - echo "Looking up latest Amazon Linux 2023 x86_64 AMI..."
 
-      - echo "Looking up latest Amazon Linux 2023 x86 AMI..."
       - >
         BASE_AMI_ID="$(aws ec2 describe-images
-        --region "${AWS_REGION}"
-        --owners "${BASE_AMI_OWNER}"
-        --filters
-          "Name=name,Values=${BASE_AMI_NAME_PATTERN}"
-          "Name=state,Values=available"
+        --region "$AWS_REGION"
+        --owners "$BASE_AMI_OWNER"
+        --filters "Name=name,Values=$BASE_AMI_NAME_PATTERN" "Name=state,Values=available"
         --query "Images | sort_by(@, &CreationDate) | [-1].ImageId"
         --output text)"
-      - echo "Using BASE_AMI_ID=${BASE_AMI_ID}"
-      - aws ec2 describe-images --region "${AWS_REGION}" --image-ids "${BASE_AMI_ID}" --query "Images[0].{ImageId:ImageId,Name:Name,CreationDate:CreationDate}" --output table
+
+      - echo "Using BASE_AMI_ID=$BASE_AMI_ID"
+      - BUILD_TS="$(date +%Y%m%d-%H%M%S)"
+      - AMI_NAME="${AMI_NAME_PREFIX}-${BUILD_TS}"
+      - echo "AMI_NAME=${AMI_NAME}"
+
+
 
   build:
     commands:
