@@ -10,8 +10,19 @@ phases:
       - source config/variables.env
       - chmod +x scripts/*.sh
 
-      - AMI_ID="$(cat ami_id.txt)"
-      - echo "Validating AMI_ID=$AMI_ID"
+      - echo "Looking up latest Amazon Linux 2023 x86_64 AMI..."
+      - >
+        BASE_AMI_ID="$(aws ec2 describe-images
+        --region "$AWS_REGION"
+        --owners "$BASE_AMI_OWNER"
+        --filters "Name=name,Values=$BASE_AMI_NAME_PATTERN" "Name=state,Values=available"
+        --query "Images | sort_by(@, &CreationDate) | [-1].ImageId"
+        --output text)"
+      - echo "Using BASE_AMI_ID=$BASE_AMI_ID"
+
+      - BUILD_TS="$(date +%Y%m%d-%H%M%S)"
+      - AMI_NAME="${AMI_NAME_PREFIX}-${BUILD_TS}"
+      - echo "AMI_NAME=${AMI_NAME}"
 
       # Allow INSTANCE_PROFILE_NAME to be either "GoldenAmiEc2Role" or the full ARN
       - |
@@ -26,48 +37,48 @@ phases:
     commands:
       - set -euo pipefail
 
-      - echo "1) Launch validation instance"
+      - echo "1) Launch builder instance"
       - >
-        VALIDATION_INSTANCE_ID="$(aws ec2 run-instances
+        BUILDER_INSTANCE_ID="$(aws ec2 run-instances
         --region "$AWS_REGION"
-        --image-id "$AMI_ID"
+        --image-id "$BASE_AMI_ID"
         --instance-type "$INSTANCE_TYPE"
         --subnet-id "$SUBNET_ID"
         --security-group-ids "$SECURITY_GROUP_ID"
         --iam-instance-profile "$IAM_INSTANCE_PROFILE"
-        --tag-specifications "ResourceType=instance,Tags=[{Key=Purpose,Value=GoldenAMIValidation},{Key=Project,Value=$PROJECT_TAG}]"
+        --tag-specifications "ResourceType=instance,Tags=[{Key=Purpose,Value=GoldenAMIBuilder},{Key=Project,Value=$PROJECT_TAG}]"
         --query "Instances[0].InstanceId"
         --output text)"
-      - echo "VALIDATION_INSTANCE_ID=$VALIDATION_INSTANCE_ID"
+      - echo "BUILDER_INSTANCE_ID=$BUILDER_INSTANCE_ID"
 
-      - aws ec2 wait instance-running --region "$AWS_REGION" --instance-ids "$VALIDATION_INSTANCE_ID"
-      - scripts/wait_for_ssm.sh "$VALIDATION_INSTANCE_ID" 420 "$AWS_REGION"
+      - aws ec2 wait instance-running --region "$AWS_REGION" --instance-ids "$BUILDER_INSTANCE_ID"
+      - scripts/wait_for_ssm.sh "$BUILDER_INSTANCE_ID" 420 "$AWS_REGION"
 
-      - echo "2) Validate via SSM"
+      - echo "2) Patch/configure builder via SSM"
       - >
-        VALIDATE_COMMAND_ID="$(aws ssm send-command
+        PATCH_COMMAND_ID="$(aws ssm send-command
         --region "$AWS_REGION"
         --document-name "AWS-RunShellScript"
-        --targets "Key=instanceids,Values=$VALIDATION_INSTANCE_ID"
+        --targets "Key=instanceids,Values=$BUILDER_INSTANCE_ID"
         --parameters commands="[
           \"set -euo pipefail\",
-          \"cat > /tmp/validate_ami.sh << 'EOF'\",
-          \"$(sed 's/\"/\\\\\"/g' scripts/validate_ami.sh)\",
+          \"cat > /tmp/patch_and_configure.sh << 'EOF'\",
+          \"$(sed 's/\"/\\\\\"/g' scripts/patch_and_configure.sh)\",
           \"EOF\",
-          \"chmod +x /tmp/validate_ami.sh\",
-          \"sudo /tmp/validate_ami.sh\"
+          \"chmod +x /tmp/patch_and_configure.sh\",
+          \"sudo /tmp/patch_and_configure.sh\"
         ]"
         --query "Command.CommandId"
         --output text)"
-      - echo "VALIDATE_COMMAND_ID=$VALIDATE_COMMAND_ID"
+      - echo "PATCH_COMMAND_ID=$PATCH_COMMAND_ID"
 
-      - echo "Waiting for validation SSM command to complete..."
+      - echo "Waiting for SSM command to complete..."
       - |
         while true; do
           STATUS=$(aws ssm get-command-invocation \
             --region "$AWS_REGION" \
-            --command-id "$VALIDATE_COMMAND_ID" \
-            --instance-id "$VALIDATION_INSTANCE_ID" \
+            --command-id "$PATCH_COMMAND_ID" \
+            --instance-id "$BUILDER_INSTANCE_ID" \
             --query "Status" \
             --output text)
 
@@ -76,26 +87,40 @@ phases:
           if [[ "$STATUS" == "Success" ]]; then
             break
           elif [[ "$STATUS" == "Failed" || "$STATUS" == "Cancelled" || "$STATUS" == "TimedOut" ]]; then
-            echo "Validation command failed. Full invocation output:"
+            echo "SSM command failed. Full invocation output:"
             aws ssm get-command-invocation \
               --region "$AWS_REGION" \
-              --command-id "$VALIDATE_COMMAND_ID" \
-              --instance-id "$VALIDATION_INSTANCE_ID"
+              --command-id "$PATCH_COMMAND_ID" \
+              --instance-id "$BUILDER_INSTANCE_ID"
             exit 1
           fi
 
           sleep 10
         done
 
-      - echo "Validation passed" > validation_result.txt
+      - echo "3) Create AMI"
+      - >
+        AMI_ID="$(aws ec2 create-image
+        --region "$AWS_REGION"
+        --instance-id "$BUILDER_INSTANCE_ID"
+        --name "$AMI_NAME"
+        --no-reboot
+        --tag-specifications "ResourceType=image,Tags=[{Key=Purpose,Value=GoldenAMI},{Key=Project,Value=$PROJECT_TAG}]"
+        --query "ImageId"
+        --output text)"
+      - echo "AMI_ID=$AMI_ID"
+
+      - aws ec2 wait image-available --region "$AWS_REGION" --image-ids "$AMI_ID"
+
+      - echo "Writing ami_id.txt"
+      - echo "$AMI_ID" > ami_id.txt
 
   post_build:
     commands:
       - set -euo pipefail
-      - echo "Cleanup validation instance"
-      - scripts/cleanup.sh "$AWS_REGION" "" "${VALIDATION_INSTANCE_ID:-}"
+      - echo "Cleanup builder instance"
+      - scripts/cleanup.sh "$AWS_REGION" "${BUILDER_INSTANCE_ID:-}" ""
 
 artifacts:
   files:
     - ami_id.txt
-    - validation_result.txt
