@@ -18,7 +18,6 @@ phases:
         --filters "Name=name,Values=$BASE_AMI_NAME_PATTERN" "Name=state,Values=available"
         --query "Images | sort_by(@, &CreationDate) | [-1].ImageId"
         --output text)"
-
       - echo "Using BASE_AMI_ID=$BASE_AMI_ID"
 
       - BUILD_TS="$(date +%Y%m%d-%H%M%S)"
@@ -41,12 +40,10 @@ phases:
         --tag-specifications "ResourceType=instance,Tags=[{Key=Purpose,Value=GoldenAMIBuilder},{Key=Project,Value=$PROJECT_TAG}]"
         --query "Instances[0].InstanceId"
         --output text)"
-
       - echo "BUILDER_INSTANCE_ID=$BUILDER_INSTANCE_ID"
 
-      - aws ec2 wait instance-running \
-          --region "$AWS_REGION" \
-          --instance-ids "$BUILDER_INSTANCE_ID"
+      - echo "Waiting for instance to be running..."
+      - aws ec2 wait instance-running --region "$AWS_REGION" --instance-ids "$BUILDER_INSTANCE_ID"
 
       - scripts/wait_for_ssm.sh "$BUILDER_INSTANCE_ID" 420 "$AWS_REGION"
 
@@ -66,7 +63,6 @@ phases:
         ]"
         --query "Command.CommandId"
         --output text)"
-
       - echo "PATCH_COMMAND_ID=$PATCH_COMMAND_ID"
 
       - echo "Waiting for SSM command to complete..."
@@ -105,19 +101,17 @@ phases:
         --tag-specifications "ResourceType=image,Tags=[{Key=Purpose,Value=GoldenAMI},{Key=Project,Value=$PROJECT_TAG}]"
         --query "ImageId"
         --output text)"
-
       - echo "AMI_ID=$AMI_ID"
 
-      - aws ec2 wait image-available \
-          --region "$AWS_REGION" \
-          --image-ids "$AMI_ID"
+      - echo "Waiting for AMI to become available..."
+      - aws ec2 wait image-available --region "$AWS_REGION" --image-ids "$AMI_ID"
 
       - echo "$AMI_ID" > ami_id.txt
 
   post_build:
     commands:
       - echo "Cleanup builder instance"
-      - scripts/cleanup.sh "$AWS_REGION" "$BUILDER_INSTANCE_ID" ""
+      - scripts/cleanup.sh "$AWS_REGION" "${BUILDER_INSTANCE_ID:-}" ""
 
 artifacts:
   files:
