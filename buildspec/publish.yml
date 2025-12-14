@@ -1,0 +1,22 @@
+version: 0.2
+env:
+  shell: bash
+
+phases:
+  pre_build:
+    commands:
+      - set -euo pipefail
+      - source config/variables.env
+      - AMI_ID="$(cat ami_id.txt)"
+      - echo "Publishing AMI_ID=${AMI_ID} to ${SSM_PARAMETER_NAME}"
+
+  build:
+    commands:
+      - set -euo pipefail
+      - aws ssm put-parameter --region "${AWS_REGION}" --name "${SSM_PARAMETER_NAME}" --type String --value "${AMI_ID}" --overwrite
+      - echo "Published ${AMI_ID}" > publish_result.txt
+
+artifacts:
+  files:
+    - ami_id.txt
+    - publish_result.txt

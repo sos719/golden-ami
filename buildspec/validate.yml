@@ -1,0 +1,64 @@
+version: 0.2
+env:
+  shell: bash
+
+phases:
+  pre_build:
+    commands:
+      - set -euo pipefail
+      - source config/variables.env
+      - chmod +x scripts/*.sh
+      - AMI_ID="$(cat ami_id.txt)"
+      - echo "Validating AMI_ID=${AMI_ID}"
+
+  build:
+    commands:
+      - set -euo pipefail
+
+      - echo "1) Launch validation instance"
+      - >
+        VALIDATION_INSTANCE_ID="$(aws ec2 run-instances
+        --region "${AWS_REGION}"
+        --image-id "${AMI_ID}"
+        --instance-type "${INSTANCE_TYPE}"
+        --subnet-id "${SUBNET_ID}"
+        --security-group-ids "${SECURITY_GROUP_ID}"
+        --iam-instance-profile Name="${INSTANCE_PROFILE_NAME}"
+        --tag-specifications "ResourceType=instance,Tags=[{Key=Purpose,Value=GoldenAMIValidation},{Key=Project,Value=${PROJECT_TAG}}]"
+        --query "Instances[0].InstanceId"
+        --output text)"
+      - echo "VALIDATION_INSTANCE_ID=${VALIDATION_INSTANCE_ID}"
+      - aws ec2 wait instance-running --region "${AWS_REGION}" --instance-ids "${VALIDATION_INSTANCE_ID}"
+      - scripts/wait_for_ssm.sh "${VALIDATION_INSTANCE_ID}" 420 "${AWS_REGION}"
+
+      - echo "2) Validate via SSM"
+      - >
+        VALIDATE_COMMAND_ID="$(aws ssm send-command
+        --region "${AWS_REGION}"
+        --document-name "AWS-RunShellScript"
+        --targets "Key=instanceids,Values=${VALIDATION_INSTANCE_ID}"
+        --parameters commands="[
+          \"set -euo pipefail\",
+          \"cat > /tmp/validate_ami.sh << 'EOF'\",
+          \"$(sed 's/\"/\\\\\"/g' scripts/validate_ami.sh)\",
+          \"EOF\",
+          \"chmod +x /tmp/validate_ami.sh\",
+          \"sudo /tmp/validate_ami.sh\"
+        ]"
+        --query "Command.CommandId"
+        --output text)"
+      - echo "VALIDATE_COMMAND_ID=${VALIDATE_COMMAND_ID}"
+      - aws ssm wait command-executed --region "${AWS_REGION}" --command-id "${VALIDATE_COMMAND_ID}" --instance-id "${VALIDATION_INSTANCE_ID}"
+
+      - echo "Validation passed" > validation_result.txt
+
+  post_build:
+    commands:
+      - set -euo pipefail
+      - echo "Cleanup validation instance"
+      - scripts/cleanup.sh "${AWS_REGION}" "" "${VALIDATION_INSTANCE_ID:-}"
+
+artifacts:
+  files:
+    - ami_id.txt
+    - validation_result.txt
