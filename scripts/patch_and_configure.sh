@@ -9,7 +9,7 @@ sudo dnf -y install jq dnf-automatic openscap-scanner scap-security-guide
 sudo sed -i 's/^apply_updates\s*=.*/apply_updates = yes/' /etc/dnf/automatic.conf || true
 sudo systemctl enable --now dnf-automatic.timer
 
-# Marker + metadata for validation/demo
+# Marker + metadata for validation
 BUILD_TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 echo "Golden AMI built at ${BUILD_TS}" | sudo tee /etc/golden_ami_built >/dev/null
