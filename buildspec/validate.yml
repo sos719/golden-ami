@@ -1,4 +1,5 @@
 version: 0.2
+
 env:
   shell: bash
 
@@ -8,35 +9,42 @@ phases:
       - set -euo pipefail
       - source config/variables.env
       - chmod +x scripts/*.sh
+
+      - echo "Reading AMI ID from ami_id.txt"
       - AMI_ID="$(cat ami_id.txt)"
-      - echo "Validating AMI_ID=${AMI_ID}"
+      - echo "AMI_ID=$AMI_ID"
 
   build:
     commands:
       - set -euo pipefail
 
-      - echo "1) Launch validation instance"
+      - echo "1) Launch validation instance from the new AMI"
       - >
         VALIDATION_INSTANCE_ID="$(aws ec2 run-instances
-        --region "${AWS_REGION}"
-        --image-id "${AMI_ID}"
-        --instance-type "${INSTANCE_TYPE}"
-        --subnet-id "${SUBNET_ID}"
-        --security-group-ids "${SECURITY_GROUP_ID}"
-        --iam-instance-profile Name="${INSTANCE_PROFILE_NAME}"
-        --tag-specifications "ResourceType=instance,Tags=[{Key=Purpose,Value=GoldenAMIValidation},{Key=Project,Value=${PROJECT_TAG}}]"
+        --region "$AWS_REGION"
+        --image-id "$AMI_ID"
+        --instance-type "$INSTANCE_TYPE"
+        --subnet-id "$SUBNET_ID"
+        --security-group-ids "$SECURITY_GROUP_ID"
+        --iam-instance-profile Name="$INSTANCE_PROFILE_NAME"
+        --tag-specifications "ResourceType=instance,Tags=[{Key=Purpose,Value=GoldenAMIValidation},{Key=Project,Value=$PROJECT_TAG}]"
         --query "Instances[0].InstanceId"
         --output text)"
-      - echo "VALIDATION_INSTANCE_ID=${VALIDATION_INSTANCE_ID}"
-      - aws ec2 wait instance-running --region "${AWS_REGION}" --instance-ids "${VALIDATION_INSTANCE_ID}"
-      - scripts/wait_for_ssm.sh "${VALIDATION_INSTANCE_ID}" 420 "${AWS_REGION}"
 
-      - echo "2) Validate via SSM"
+      - echo "VALIDATION_INSTANCE_ID=$VALIDATION_INSTANCE_ID"
+
+      - aws ec2 wait instance-running \
+          --region "$AWS_REGION" \
+          --instance-ids "$VALIDATION_INSTANCE_ID"
+
+      - scripts/wait_for_ssm.sh "$VALIDATION_INSTANCE_ID" 420 "$AWS_REGION"
+
+      - echo "2) Run validation checks via SSM"
       - >
         VALIDATE_COMMAND_ID="$(aws ssm send-command
-        --region "${AWS_REGION}"
+        --region "$AWS_REGION"
         --document-name "AWS-RunShellScript"
-        --targets "Key=instanceids,Values=${VALIDATION_INSTANCE_ID}"
+        --targets "Key=instanceids,Values=$VALIDATION_INSTANCE_ID"
         --parameters commands="[
           \"set -euo pipefail\",
           \"cat > /tmp/validate_ami.sh << 'EOF'\",
@@ -47,16 +55,42 @@ phases:
         ]"
         --query "Command.CommandId"
         --output text)"
-      - echo "VALIDATE_COMMAND_ID=${VALIDATE_COMMAND_ID}"
-      - aws ssm wait command-executed --region "${AWS_REGION}" --command-id "${VALIDATE_COMMAND_ID}" --instance-id "${VALIDATION_INSTANCE_ID}"
 
-      - echo "Validation passed" > validation_result.txt
+      - echo "VALIDATE_COMMAND_ID=$VALIDATE_COMMAND_ID"
+
+      - echo "Waiting for validation command to complete..."
+      - |
+        while true; do
+          STATUS=$(aws ssm get-command-invocation \
+            --region "$AWS_REGION" \
+            --command-id "$VALIDATE_COMMAND_ID" \
+            --instance-id "$VALIDATION_INSTANCE_ID" \
+            --query "Status" \
+            --output text)
+
+          echo "SSM Status: $STATUS"
+
+          if [[ "$STATUS" == "Success" ]]; then
+            break
+          elif [[ "$STATUS" == "Failed" || "$STATUS" == "Cancelled" || "$STATUS" == "TimedOut" ]]; then
+            echo "Validation command failed. Output:"
+            aws ssm get-command-invocation \
+              --region "$AWS_REGION" \
+              --command-id "$VALIDATE_COMMAND_ID" \
+              --instance-id "$VALIDATION_INSTANCE_ID"
+            echo "FAILED" > validation_result.txt
+            exit 1
+          fi
+
+          sleep 10
+        done
+
+      - echo "SUCCESS" > validation_result.txt
 
   post_build:
     commands:
-      - set -euo pipefail
       - echo "Cleanup validation instance"
-      - scripts/cleanup.sh "${AWS_REGION}" "" "${VALIDATION_INSTANCE_ID:-}"
+      - scripts/cleanup.sh "$AWS_REGION" "" "$VALIDATION_INSTANCE_ID"
 
 artifacts:
   files:
