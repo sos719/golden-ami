@@ -129,3 +129,6 @@ phases:
 artifacts:
   files:
     - ami_id.txt
+    - buildspec/**/*
+    - scripts/**/*
+    - config/**/*
