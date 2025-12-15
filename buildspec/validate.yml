@@ -47,7 +47,7 @@ phases:
       - echo "Waiting for validation instance SSM to be Online..."
       - scripts/wait_for_ssm.sh "$VALIDATION_INSTANCE_ID" 420 "$AWS_REGION"
 
-      - echo "2) Run validation via SSM (base64-safe)"
+      - echo "2) Run validation"
       - VALIDATE_B64="$(base64 scripts/validate_ami.sh | tr -d '\n')"
       - >
         VALIDATE_COMMAND_ID="$(aws ssm send-command
